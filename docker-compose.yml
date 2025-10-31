@@ -1,0 +1,246 @@
+version: '3.8'
+
+services:
+  # ===================
+  # Infrastructure
+  # ===================
+  
+  postgres:
+    image: postgres:15-alpine
+    container_name: mekala-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mekala_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mekala_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-mekala_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docs/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - mekala-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mekala_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: mekala-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - mekala-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: mekala-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-guest}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - mekala-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===================
+  # Backend Services
+  # ===================
+
+  api-gateway:
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    container_name: mekala-api-gateway
+    environment:
+      - PORT=8000
+      - USER_SERVICE_URL=http://user-service:8001
+      - PAYMENT_SERVICE_URL=http://payment-service:8002
+      - COURSE_SERVICE_URL=http://course-service:8003
+      - AI_SERVICE_URL=http://ai-service:8004
+      - COMMUNICATION_SERVICE_URL=http://communication-service:8005
+      - JWT_SECRET=${JWT_SECRET}
+      - REDIS_URL=${REDIS_URL}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+      - user-service
+      - payment-service
+      - course-service
+      - ai-service
+      - communication-service
+    networks:
+      - mekala-network
+    restart: unless-stopped
+
+  user-service:
+    build:
+      context: ./services/user-service
+      dockerfile: Dockerfile
+    container_name: mekala-user-service
+    environment:
+      - PORT=8001
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - JWT_SECRET=${JWT_SECRET}
+      - WHATSAPP_API_TOKEN=${WHATSAPP_API_TOKEN}
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
+      - SENDGRID_API_KEY=${SENDGRID_API_KEY}
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - mekala-network
+    restart: unless-stopped
+
+  payment-service:
+    build:
+      context: ./services/payment-service
+      dockerfile: Dockerfile
+    container_name: mekala-payment-service
+    environment:
+      - PORT=8002
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - PAYPAL_CLIENT_ID=${PAYPAL_CLIENT_ID}
+      - PAYPAL_SECRET=${PAYPAL_SECRET}
+      - RABBITMQ_URL=${RABBITMQ_URL}
+    ports:
+      - "8002:8002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - mekala-network
+    restart: unless-stopped
+
+  course-service:
+    build:
+      context: ./services/course-service
+      dockerfile: Dockerfile
+    container_name: mekala-course-service
+    environment:
+      - PORT=8003
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - RABBITMQ_URL=${RABBITMQ_URL}
+      - STORAGE_PATH=/var/mekala/storage
+    ports:
+      - "8003:8003"
+    volumes:
+      - course_storage:/var/mekala/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - mekala-network
+    restart: unless-stopped
+
+  ai-service:
+    build:
+      context: ./services/ai-service
+      dockerfile: Dockerfile
+    container_name: mekala-ai-service
+    environment:
+      - PORT=8004
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_SPEECH_API_KEY=${GOOGLE_SPEECH_API_KEY}
+      - AZURE_COGNITIVE_KEY=${AZURE_COGNITIVE_KEY}
+    ports:
+      - "8004:8004"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - mekala-network
+    restart: unless-stopped
+
+  communication-service:
+    build:
+      context: ./services/communication-service
+      dockerfile: Dockerfile
+    container_name: mekala-communication-service
+    environment:
+      - PORT=8005
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - RABBITMQ_URL=${RABBITMQ_URL}
+      - WHATSAPP_API_TOKEN=${WHATSAPP_API_TOKEN}
+      - ZOOM_API_KEY=${ZOOM_API_KEY}
+      - ZOOM_API_SECRET=${ZOOM_API_SECRET}
+      - SENDGRID_API_KEY=${SENDGRID_API_KEY}
+    ports:
+      - "8005:8005"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - mekala-network
+    restart: unless-stopped
+
+  # ===================
+  # Frontend
+  # ===================
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: mekala-frontend
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+      - REACT_APP_WS_URL=ws://localhost:8000/ws
+    ports:
+      - "3000:80"
+    depends_on:
+      - api-gateway
+    networks:
+      - mekala-network
+    restart: unless-stopped
+
+networks:
+  mekala-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+  course_storage:
